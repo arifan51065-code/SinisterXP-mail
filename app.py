@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — Final Full Version (with /announce + /start menu)
+# SinisterXP Mail Bot — Final Premium Version (with /announce + /addcoin + /start)
 
 import os, sqlite3, logging, asyncio
 from datetime import datetime
@@ -196,6 +196,27 @@ async def addcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     con.commit(); con.close()
     await update.message.reply_text(f"Added code to {name}")
 
+# ====== ADD COIN SYSTEM ======
+async def addcoin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    a = ctx.args
+    if len(a) != 2:
+        return await update.message.reply_text("Usage: /addcoin USER_ID AMOUNT")
+
+    user_id = int(a[0])
+    amount = int(a[1])
+    con = db(); c = con.cursor()
+    c.execute("SELECT balance FROM users WHERE id=?", (user_id,))
+    row = c.fetchone()
+    if not row:
+        con.close()
+        return await update.message.reply_text("User not found.")
+    new_balance = row[0] + amount
+    c.execute("UPDATE users SET balance=? WHERE id=?", (new_balance, user_id))
+    con.commit(); con.close()
+    await update.message.reply_text(f"✅ Added {amount} {COIN_NAME} to user {user_id}\nNew balance: {new_balance}")
+
 # ====== ANNOUNCEMENT ======
 async def announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -235,6 +256,7 @@ def main():
 
     app.add_handler(CommandHandler("addmail", addmail))
     app.add_handler(CommandHandler("addcode", addcode))
+    app.add_handler(CommandHandler("addcoin", addcoin))
     app.add_handler(CommandHandler("announce", announce))
 
     if WEBHOOK_BASE:
