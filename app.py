@@ -4,14 +4,12 @@
 # ---- auto install deps (single-file deploy) ----
 try:
     from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, PicklePersistence, ContextTypes
-    from apscheduler.schedulers.background import BackgroundScheduler
+    from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 except Exception:
     import sys, subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "python-telegram-bot==20.4", "apscheduler==3.10.1"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "python-telegram-bot==20.4"])
     from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-    from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, PicklePersistence, ContextTypes
-    from apscheduler.schedulers.background import BackgroundScheduler
+    from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
 import os, io, csv, logging, sqlite3
 from datetime import datetime
@@ -22,19 +20,19 @@ BOT_TOKEN      = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "@your_admin")
 MIN_PURCHASE   = int(os.getenv("MIN_PURCHASE", "20"))
+
 COIN_NAME      = "🪙 Zedx Coin"
 GETMAIL_EMOJI  = "🔥"
 
-# Webhook config
-PORT          = int(os.getenv("PORT", "8080"))
-WEBHOOK_BASE  = os.getenv("WEBHOOK_BASE")  # e.g. https://zedxbot.onrender.com
+# Webhook (Render)
+PORT         = int(os.getenv("PORT", "8080"))
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")  # e.g. https://your-app.onrender.com
 
 if not BOT_TOKEN or not ADMIN_ID:
     raise RuntimeError("Set TELEGRAM_BOT_TOKEN and ADMIN_ID in environment")
 
 BASE_DIR   = os.path.dirname(__file__)
 DB_PATH    = os.path.join(BASE_DIR, "botdata.db")
-BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 
 # ========= LOGGING =========
 logging.basicConfig(level=logging.INFO)
@@ -51,7 +49,7 @@ def init_db():
       id INTEGER PRIMARY KEY AUTOINCREMENT, mail_name TEXT, payload TEXT, used INTEGER DEFAULT 0, added_ts TEXT)""")
     c.execute("""CREATE TABLE IF NOT EXISTS purchases(
       id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, mail_name TEXT, price INTEGER, ts TEXT)""")
-    # single catalog item
+    # default catalog item
     c.execute("INSERT OR IGNORE INTO mail_items(name,stock,price) VALUES('FB MAIL',0,1)")
     conn.commit(); conn.close()
 
@@ -246,27 +244,10 @@ async def backup(update:Update, ctx:ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(document=io.BytesIO(sio.getvalue().encode()),
                                         filename=f"backup_{datetime.utcnow().date()}.csv")
 
-# ========= SCHEDULED BACKUP =========
-def scheduled_backup():
-    try:
-        conn=db(); c=conn.cursor()
-        c.execute("SELECT id,username,first_name,balance FROM users"); users=c.fetchall()
-        c.execute("SELECT name,stock,price FROM mail_items"); items=c.fetchall()
-        c.execute("SELECT id,user_id,mail_name,price,ts FROM purchases"); pur=c.fetchall(); conn.close()
-        os.makedirs(BACKUP_DIR, exist_ok=True)
-        fn=os.path.join(BACKUP_DIR,f"backup_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv")
-        with open(fn,"w",encoding="utf-8") as f:
-            w=csv.writer(f); w.writerow(["users"]); w.writerows(users)
-            w.writerow([]); w.writerow(["items"]); w.writerows(items)
-            w.writerow([]); w.writerow(["purchases"]); w.writerows(pur)
-        logger.info("Backup saved: %s", fn)
-    except Exception as e:
-        logger.exception("Scheduled backup failed: %s", e)
-
 # ========= MAIN =========
 def main():
     init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).persistence(PicklePersistence("persist.pkl")).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # user
     app.add_handler(CommandHandler("start", start))
@@ -285,16 +266,13 @@ def main():
     app.add_handler(CommandHandler("logs", logs))
     app.add_handler(CommandHandler("backup", backup))
 
-    # daily backup
-    sch=BackgroundScheduler(); sch.add_job(scheduled_backup, "interval", hours=24); sch.start()
-
     # ---- WEBHOOK or POLLING ----
     if WEBHOOK_BASE:
         webhook_url = f"{WEBHOOK_BASE}/{BOT_TOKEN}"
-        logger.info(f"Starting webhook at {webhook_url}")
+        logging.info(f"Starting webhook at {webhook_url}")
         app.run_webhook(listen="0.0.0.0", port=PORT, url_path=BOT_TOKEN, webhook_url=webhook_url)
     else:
-        logger.info("WEBHOOK_BASE not set. Using polling.")
+        logging.info("WEBHOOK_BASE not set. Using polling.")
         app.run_polling()
 
 if __name__=="__main__":
