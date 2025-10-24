@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — Final Base with AddCoin, DelMail, FixStock, Float price
+# SinisterXP Mail Bot — Final Full Version (with Keep-Alive + Admin Tools)
 
-import os, sqlite3, logging, asyncio
+import os, sqlite3, logging, asyncio, aiohttp
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
@@ -21,6 +21,7 @@ GETMAIL_EMOJI = "🔥"
 
 PORT = int(os.getenv("PORT", "8080"))
 WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")
+KEEPALIVE_URL = os.getenv("KEEPALIVE_URL") or WEBHOOK_BASE  # for Render keep-alive
 
 # ====== LOG ======
 logging.basicConfig(level=logging.INFO)
@@ -60,14 +61,14 @@ def catalog_rows():
     c.execute("SELECT name,stock,price FROM mail_items ORDER BY id")
     rows = c.fetchall(); con.close(); return rows
 
-# ====== MAIN KEYBOARD ======
+# ====== MAIN MENU ======
 def main_keyboard():
     return ReplyKeyboardMarkup(
         [[f"{GETMAIL_EMOJI} Get Mail"], ["💰 Deposit", "💳 Balance"]],
         resize_keyboard=True
     )
 
-# ====== USER ======
+# ====== USER COMMANDS ======
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     await ensure_user(u)
@@ -232,11 +233,26 @@ async def announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except: pass
     await update.message.reply_text(f"✅ Sent to {sent} users.")
 
-# ====== RUN ======
+# ====== KEEP-ALIVE (Self Ping) ======
+async def keep_alive_task():
+    if not KEEPALIVE_URL:
+        print("⚠️ KEEPALIVE_URL not set, skipping keep-alive.")
+        return
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                async with session.get(KEEPALIVE_URL, timeout=10) as resp:
+                    print(f"[KeepAlive] Ping {KEEPALIVE_URL} → {resp.status}")
+            except Exception as e:
+                print("Keep-alive error:", e)
+            await asyncio.sleep(240)  # every 4 minutes
+
+# ====== MAIN RUN ======
 def main():
     if not BOT_TOKEN: raise RuntimeError("Set TELEGRAM_BOT_TOKEN")
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     app.add_handler(CallbackQueryHandler(menu_cb, pattern="^(back)$"))
@@ -249,6 +265,12 @@ def main():
     app.add_handler(CommandHandler("fixstock", fixstock))
     app.add_handler(CommandHandler("addcoin", addcoin))
     app.add_handler(CommandHandler("announce", announce))
+
+    async def _post_init(app):
+        app.create_task(keep_alive_task())
+
+    app.post_init(_post_init)
+
     if WEBHOOK_BASE:
         url = f"{WEBHOOK_BASE}/{BOT_TOKEN}"
         app.run_webhook(listen="0.0.0.0", port=int(PORT), url_path=BOT_TOKEN, webhook_url=url)
