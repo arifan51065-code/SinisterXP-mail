@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — ReplyKeyboard (3 buttons) + Inline flows
-import os, sqlite3, logging
+# SinisterXP Mail Bot — ReplyKeyboard (3 buttons) + Inline flows + One-time /start + Broadcast + EN Confirm
+
+import os, sqlite3, logging, asyncio
 from datetime import datetime
 
 from telegram import (
     Update,
     InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton,
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -40,7 +41,18 @@ DB_PATH  = os.path.join(BASE_DIR, "botdata.db")
 def init_db():
     con = sqlite3.connect(DB_PATH); c = con.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS users(
-        id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, balance INTEGER DEFAULT 0)""")
+        id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        balance INTEGER DEFAULT 0,
+        onboarded INTEGER DEFAULT 0
+    )""")
+    # ensure onboarded exists (for old DBs)
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN onboarded INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
     c.execute("""CREATE TABLE IF NOT EXISTS mail_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, stock INTEGER DEFAULT 0, price INTEGER DEFAULT 1)""")
     c.execute("""CREATE TABLE IF NOT EXISTS codes(
@@ -57,17 +69,44 @@ async def ensure_user(u):
     con=db(); c=con.cursor()
     c.execute("SELECT 1 FROM users WHERE id=?", (u.id,))
     if not c.fetchone():
-        c.execute("INSERT INTO users(id,username,first_name,balance) VALUES(?,?,?,0)",
-                  (u.id, u.username or "", u.first_name or ""))
+        c.execute("INSERT INTO users(id,username,first_name,balance,onboarded) VALUES(?,?,?,?,0)",
+                  (u.id, u.username or "", u.first_name or "", 0))
         con.commit()
     con.close()
+
+def get_user_onboarded(uid:int)->int:
+    con=db(); c=con.cursor()
+    c.execute("SELECT onboarded FROM users WHERE id=?", (uid,))
+    row=c.fetchone(); con.close()
+    return (row[0] if row else 0)
+
+def set_user_onboarded(uid:int, val:int=1):
+    con=db(); c=con.cursor()
+    c.execute("UPDATE users SET onboarded=? WHERE id=?", (val, uid))
+    con.commit(); con.close()
 
 def catalog_rows():
     con=db(); c=con.cursor()
     c.execute("SELECT name,stock,price FROM mail_items ORDER BY id")
     rows=c.fetchall(); con.close(); return rows
 
-# ====== HELPERS: message versions (ReplyKeyboard triggers) ======
+# ====== MENUS ======
+def main_keyboard():
+    # Row1: Get Mail | Row2: Deposit, Balance
+    return ReplyKeyboardMarkup(
+        [["🔥 Get Mail"], ["💰 Deposit", "💳 Balance"]],
+        resize_keyboard=True
+    )
+
+def one_time_start_keyboard():
+    # one-time keyboard with /start
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton("/start")]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+# ====== MESSAGE FLOWS (reply keyboard triggers) ======
 async def send_catalog_msg(update: Update):
     rows = catalog_rows()
     if not rows:
@@ -97,23 +136,29 @@ async def send_balance_msg(update: Update):
     row=c.fetchone(); con.close()
     await update.message.reply_text(f"Your balance: {(row[0] if row else 0)} {COIN_NAME}")
 
-# ====== START + REPLY KEYBOARD (3 buttons) ======
-def main_keyboard():
-    # Row1: Get Mail | Row2: Deposit, Balance  (Palestine style but 3 item)
-    return ReplyKeyboardMarkup(
-        [["🔥 Get Mail"], ["💰 Deposit", "💳 Balance"]],
-        resize_keyboard=True
-    )
-
+# ====== START ======
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     await ensure_user(u)
+
+    # show one-time /start button for first-timers only
+    onboarded = get_user_onboarded(u.id)
+    if onboarded == 0:
+        # first time: show one-time /start button and set onboarded=1
+        await update.message.reply_text(
+            "✳️ /start লিখে বট চালু করুন",
+            reply_markup=one_time_start_keyboard()
+        )
+        set_user_onboarded(u.id, 1)
+        return
+
+    # regular menu after first time
     await update.message.reply_text(
         f"স্বাগতম {u.first_name or ''}! 🔥\n\nনিচ থেকে একটি অপশন বাছাই করুন:",
         reply_markup=main_keyboard()
     )
 
-# ====== TEXT ROUTER for ReplyKeyboard presses ======
+# ====== TEXT ROUTER ======
 async def text_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     t = (update.message.text or "").strip()
     if "Get Mail" in t:
@@ -124,7 +169,7 @@ async def text_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await send_balance_msg(update)
     # ignore others
 
-# ====== INLINE FLOW (unchanged) ======
+# ====== INLINE FLOW ======
 async def menu_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if q.data=="back":
@@ -138,10 +183,12 @@ async def buy_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     row=c.fetchone(); con.close()
     if not row: return await q.message.reply_text("Item পাওয়া যায়নি।")
     stock, price = row
-    if stock <= 0: return await q.message.reply_text("Stock শেষ।")
-    kb=[[InlineKeyboardButton("Haan", callback_data=f"confirm::{name}")],
-        [InlineKeyboardButton("Baatil", callback_data="cancel")]]
-    await q.message.reply_text("Apni ki mail kinben nischit korun?", reply_markup=InlineKeyboardMarkup(kb))
+    if stock <= 0: return await q.message.reply_text("Out of stock.")
+
+    # 🔁 CHANGED: English confirm text + Yes/No buttons
+    kb=[[InlineKeyboardButton("Yes", callback_data=f"confirm::{name}")],
+        [InlineKeyboardButton("No",  callback_data="cancel")]]
+    await q.message.reply_text("Confirm your order", reply_markup=InlineKeyboardMarkup(kb))
 
 async def confirm_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
@@ -156,12 +203,12 @@ async def confirm_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         con.close(); return await q.message.reply_text("Problem.")
     stock, price = row; balance = rb[0]
     if balance < price:
-        con.close(); return await q.message.reply_text(f"Balance {balance} {COIN_NAME}. Dorkar {price}. Deposit koro.")
+        con.close(); return await q.message.reply_text(f"Balance {balance} {COIN_NAME}. Need {price}. Please deposit.")
 
     # one unused code
     c.execute("SELECT id,payload FROM codes WHERE mail_name=? AND used=0 ORDER BY id LIMIT 1", (name,))
     code=c.fetchone()
-    if not code: con.close(); return await q.message.reply_text("কোনো কোড নেই।")
+    if not code: con.close(); return await q.message.reply_text("No code available right now.")
     code_id, payload = code
 
     # commit
@@ -176,11 +223,18 @@ async def confirm_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
-    await q.message.reply_text("Transaction cancelled.", reply_markup=main_keyboard())
+    await q.message.reply_text("❌ Order canceled.", reply_markup=main_keyboard())
 
 # ====== ADMIN ======
+def admin_only(func):
+    async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user and update.effective_user.id == ADMIN_ID:
+            return await func(update, ctx)
+        # ignore silently for non-admin
+    return wrapper
+
+@admin_only
 async def addmail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
     a=ctx.args
     if len(a)!=3: return await update.message.reply_text("Usage: /addmail NAME STOCK PRICE")
     name,stock,price=a[0],int(a[1]),int(a[2])
@@ -189,8 +243,8 @@ async def addmail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     con.commit(); con.close()
     await update.message.reply_text(f"Added {name}")
 
+@admin_only
 async def addcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
     a=ctx.args
     if len(a)<2: return await update.message.reply_text("Usage: /addcode NAME payload")
     name=a[0]; payload=" ".join(a[1:])
@@ -201,6 +255,28 @@ async def addcode(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
               (name, name))
     con.commit(); con.close()
     await update.message.reply_text(f"Added code to {name}")
+
+# NEW: admin broadcast /announce <text>
+@admin_only
+async def announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        return await update.message.reply_text("Usage: /announce your message here")
+    text = " ".join(ctx.args)
+
+    con=db(); c=con.cursor()
+    c.execute("SELECT id FROM users")
+    ids=[row[0] for row in c.fetchall()]
+    con.close()
+
+    sent, fail = 0, 0
+    for uid in ids:
+        try:
+            await ctx.bot.send_message(chat_id=uid, text=f"📢 Announcement:\n\n{text}")
+            sent += 1
+            await asyncio.sleep(0.03)  # be gentle
+        except Exception:
+            fail += 1
+    await update.message.reply_text(f"Announcement sent ✅  (ok: {sent}, fail: {fail})")
 
 # ====== RUN ======
 def main():
@@ -222,6 +298,7 @@ def main():
     # admin
     app.add_handler(CommandHandler("addmail", addmail))
     app.add_handler(CommandHandler("addcode", addcode))
+    app.add_handler(CommandHandler("announce", announce))
 
     # webhook or polling
     if WEBHOOK_BASE:
