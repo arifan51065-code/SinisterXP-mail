@@ -336,6 +336,17 @@ def main():
     start_keepalive()
     start_backup()
     if WEBHOOK_BASE:
-        url=f"{WEBHOOK_BASE.rstrip('/')}/{BOT_TOKEN}"
+        url = f"{WEBHOOK_BASE.rstrip('/')}/{BOT_TOKEN}"
         log.info("Starting webhook at %s", url)
-        app.run_webhook(listen="0.0.0.0", port=int(PORT), url_path
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=int(PORT),
+            url_path=BOT_TOKEN,
+            webhook_url=url,
+        )
+    else:
+        log.info("Starting polling...")
+        app.run_polling(close_loop=False)
+
+if __name__ == "__main__":
+    main()
