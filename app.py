@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — v2.2 (MarkdownV2 Safe + Manual Backup + Stable Version)
+# SinisterXP Mail Bot — v2.3 (MarkdownV2 Full Escape + Manual Backup + Stable Version)
 
 import os, sqlite3, logging, threading, time, requests, shutil, asyncio
 from datetime import datetime
@@ -174,10 +174,12 @@ async def cb_confirm(update, ctx):
     c.execute("INSERT INTO purchases(user_id,mail_name,price,ts) VALUES(?,?,?,?)",(u.id,name,price,datetime.utcnow().isoformat()))
     con.commit(); con.close()
 
-    # ✅ MarkdownV2 Safe Output
+    # ✅ Full MarkdownV2 Safe Escape
     escaped_payload = escape_markdown(payload, version=2)
+    escaped_payload = escaped_payload.replace('!', '\\!')
+
     await q.message.reply_text(
-        f"✅ Purchase successful!\n\n{escaped_payload}\n\nRemaining: {balance-price:g} {COIN_NAME}",
+        f"✅ Purchase successful\\!\n\n{escaped_payload}\n\nRemaining: {balance-price:g} {COIN_NAME}",
         parse_mode="MarkdownV2",
         disable_web_page_preview=True,
         reply_markup=main_keyboard()
@@ -275,12 +277,7 @@ def main():
     if WEBHOOK_BASE:
         url = f"{WEBHOOK_BASE.rstrip('/')}/{BOT_TOKEN}"
         log.info("Starting webhook at %s", url)
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=int(PORT),
-            url_path=BOT_TOKEN,
-            webhook_url=url,
-        )
+        app.run_webhook(listen="0.0.0.0", port=int(PORT), url_path=BOT_TOKEN, webhook_url=url)
     else:
         log.info("Starting polling...")
         app.run_polling(close_loop=False)
