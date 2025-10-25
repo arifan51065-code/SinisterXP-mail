@@ -356,3 +356,8 @@ def main():
         )
     else:
         log.info("Starting polling…
+                 log.info("Starting polling…")
+        app.run_polling(close_loop=False)
+
+if __name__ == "__main__":
+    main()
