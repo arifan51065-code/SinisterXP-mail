@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — Stable Version (Manual Backup System + No Auto Git Reset)
+# SinisterXP Mail Bot — Stable Version (Manual Backup System + Preserves Addcode Format)
 
 import os, sqlite3, logging, threading, time, requests, shutil, asyncio
 from datetime import datetime
@@ -172,7 +172,14 @@ async def cb_confirm(update, ctx):
     c.execute("UPDATE mail_items SET stock=(SELECT COUNT(*) FROM codes WHERE mail_name=? AND used=0) WHERE name=?", (name,name))
     c.execute("INSERT INTO purchases(user_id,mail_name,price,ts) VALUES(?,?,?,?)",(u.id,name,price,datetime.utcnow().isoformat()))
     con.commit(); con.close()
-    await q.message.reply_text(f"✅ Purchase successful!\n\n{payload}\n\nRemaining: {balance-price:g} {COIN_NAME}", reply_markup=main_keyboard())
+    
+    # ✅ Preserve exact format from /addcode message
+    await q.message.reply_text(
+        f"✅ Purchase successful!\n\n{payload}\n\nRemaining: {balance-price:g} {COIN_NAME}",
+        parse_mode=None,  # Keep raw format (no markdown conversion)
+        disable_web_page_preview=True,
+        reply_markup=main_keyboard()
+    )
 
 async def cb_cancel(update, ctx): q=update.callback_query; await q.answer(); await q.message.reply_text("Cancelled.", reply_markup=main_keyboard())
 
@@ -275,9 +282,6 @@ def main():
     else:
         log.info("Starting polling...")
         app.run_polling(close_loop=False)
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()
