@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — v2.5 (Copy Button Edition + Raw Output Safe Mode)
+# SinisterXP Mail Bot — v2.6 (True Copy Simulation Edition)
 
 import os, sqlite3, logging, threading, time, requests, shutil, asyncio
 from datetime import datetime
@@ -174,13 +174,21 @@ async def cb_confirm(update, ctx):
     con.commit(); con.close()
 
     copy_btn = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 Copy", switch_inline_query=payload)]
+        [InlineKeyboardButton("📋 Copy Text", callback_data=f"copy::{code_id}")]
     ])
     await q.message.reply_text(
         f"✅ Purchase successful!\n\n{payload}\n\nRemaining: {balance - price:g} {COIN_NAME}",
         disable_web_page_preview=True,
         reply_markup=copy_btn
     )
+
+async def cb_copy(update, ctx):
+    q=update.callback_query; await q.answer()
+    _, code_id = q.data.split("::", 1)
+    con=db(); c=con.cursor(); c.execute("SELECT payload FROM codes WHERE id=?", (code_id,))
+    row=c.fetchone(); con.close()
+    if not row: return await q.message.reply_text("❌ Payload not found.")
+    await q.message.reply_text(row[0])
 
 async def cb_cancel(update, ctx): q=update.callback_query; await q.answer(); await q.message.reply_text("Cancelled.", reply_markup=main_keyboard())
 
@@ -262,6 +270,7 @@ def main():
     app.add_handler(CallbackQueryHandler(cb_back, pattern="^back$"))
     app.add_handler(CallbackQueryHandler(cb_buy, pattern="^buy::"))
     app.add_handler(CallbackQueryHandler(cb_confirm, pattern="^confirm::"))
+    app.add_handler(CallbackQueryHandler(cb_copy, pattern="^copy::"))
     app.add_handler(CallbackQueryHandler(cb_cancel, pattern="^cancel$"))
     app.add_handler(CommandHandler("addmail", cmd_addmail))
     app.add_handler(CommandHandler("delmail", cmd_delmail))
