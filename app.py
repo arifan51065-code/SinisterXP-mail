@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — Full features + keep-alive (PTB v21, polling/webhook auto)
+# SinisterXP Mail Bot — Full features + /users + Keep-alive + Auto GitHub Backup
 
-import os, sqlite3, logging, threading, time, requests
+import os, sqlite3, logging, threading, time, requests, subprocess, shutil
 from datetime import datetime
 
 from telegram import (
@@ -24,8 +24,17 @@ COIN_NAME      = "🪙 Zedx Coin"
 GETMAIL_EMOJI  = "🔥"
 
 PORT         = int(os.getenv("PORT", "8080"))
-WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")          # e.g. https://your-service.onrender.com
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")              # e.g. https://your-service.onrender.com
 KEEPALIVE_URL = os.getenv("KEEPALIVE_URL", WEBHOOK_BASE)
+
+# --- GitHub Backup ENV ---
+GITHUB_TOKEN    = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO     = os.getenv("GITHUB_REPO", "")        # owner/repo
+GITHUB_BRANCH   = os.getenv("GITHUB_BRANCH", "main")
+GIT_USER_NAME   = os.getenv("GIT_USER_NAME", "SinisterXP Bot")
+GIT_USER_EMAIL  = os.getenv("GIT_USER_EMAIL", "bot@example.com")
+BACKUP_INTERVAL = int(os.getenv("BACKUP_INTERVAL_SECS", "3600"))   # 1h
+FALLBACK_SECS   = int(os.getenv("BACKUP_FALLBACK_SECS", "21600"))  # 6h
 
 # ====== LOG ======
 logging.basicConfig(level=logging.INFO)
@@ -54,6 +63,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, mail_name TEXT, price REAL, ts TEXT
     )""")
+    # default row (kept as before; harmless)
+    c.execute("INSERT OR IGNORE INTO mail_items(name,stock,price) VALUES('FB MAIL',0,1)")
     con.commit(); con.close()
 
 async def ensure_user(u):
@@ -77,7 +88,7 @@ def main_keyboard():
         resize_keyboard=True
     )
 
-# ====== USER FLOWS ======
+# ====== USER FLOWS (unchanged formats) ======
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     await ensure_user(u)
@@ -168,13 +179,18 @@ async def cb_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     c.execute("INSERT INTO purchases(user_id,mail_name,price,ts) VALUES(?,?,?,?)",
               (u.id, name, price, datetime.utcnow().isoformat()))
     con.commit(); con.close()
-    await q.message.reply_text(f"✅ Purchase successful\n\n{payload}\n\nRemaining: {balance-price:g} {COIN_NAME}")
+
+    # Purchase message: keep EXACT old style (copy-friendly)
+    await q.message.reply_text(
+        f"✅ Purchase successful\n\n{payload}\n\nRemaining: {balance-price:g} {COIN_NAME}",
+        reply_markup=main_keyboard()
+    )
 
 async def cb_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
     await q.message.reply_text("Transaction cancelled.", reply_markup=main_keyboard())
 
-# ====== ADMIN CMDS ======
+# ====== ADMIN CMDS (unchanged + new /users) ======
 def admin_only(uid:int)->bool: return uid == ADMIN_ID
 
 async def cmd_addmail(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -245,12 +261,30 @@ async def cmd_announce(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await ctx.bot.send_message(chat_id=uid, text=f"📢 Announcement:\n\n{text}")
             sent+=1
-            await asyncio.sleep(0.03)  # tiny backoff
+            time.sleep(0.03)
         except Exception:
             pass
     await update.message.reply_text(f"Announcement sent to {sent} users.")
 
-# ====== KEEP-ALIVE (threading + requests; no asyncio loop conflict) ======
+async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not admin_only(update.effective_user.id): return
+    con=db(); c=con.cursor()
+    c.execute("SELECT id, COALESCE(username,''), COALESCE(first_name,''), COALESCE(balance,0) FROM users ORDER BY id LIMIT 200")
+    rows=c.fetchall(); con.close()
+    if not rows:
+        return await update.message.reply_text("No users yet.")
+    lines=[f"👥 Total Users: {len(rows)}"]
+    for i,(uid,uname,fname,bal) in enumerate(rows, start=1):
+        uname = f"@{uname}" if uname else "—"
+        lines.append(f"{i}️⃣ ID: {uid} | {uname} | Balance: {float(bal):g}")
+    txt="\n".join(lines)
+    await update.message.reply_text(txt)
+
+async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u=update.effective_user
+    await update.message.reply_text(f"ID: {u.id}\nUsername: @{u.username or '—'}")
+
+# ====== KEEP-ALIVE (threading + requests) ======
 def _keepalive_loop():
     if not KEEPALIVE_URL:
         return
@@ -266,6 +300,64 @@ def _keepalive_loop():
 
 def start_keepalive():
     t = threading.Thread(target=_keepalive_loop, daemon=True)
+    t.start()
+
+# ====== AUTO GITHUB BACKUP (threading) ======
+def _git_run(args, extra_env=None):
+    env = os.environ.copy()
+    if extra_env: env.update(extra_env)
+    proc = subprocess.run(args, capture_output=True, text=True, env=env)
+    if proc.returncode != 0:
+        log.warning("git cmd failed: %s\nstdout=%s\nstderr=%s", " ".join(args), proc.stdout, proc.stderr)
+    return proc.returncode == 0
+
+def _backup_once():
+    if not (GITHUB_TOKEN and GITHUB_REPO):
+        log.info("Backup skipped: GITHUB_TOKEN/GITHUB_REPO not set.")
+        return True  # don't block loop if not configured
+
+    # prepare backup file
+    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    backup_dir = os.path.join(BASE_DIR, "backup")
+    os.makedirs(backup_dir, exist_ok=True)
+    src = DB_PATH
+    if not os.path.exists(src):
+        log.warning("DB file not found for backup: %s", src)
+        return False
+    dst = os.path.join(backup_dir, f"botdata-{ts}.db")
+    shutil.copyfile(src, dst)
+
+    # git config
+    _git_run(["git", "config", "user.name", GIT_USER_NAME])
+    _git_run(["git", "config", "user.email", GIT_USER_EMAIL])
+
+    # add & commit
+    ok_add = _git_run(["git", "add", os.path.relpath(dst, BASE_DIR)])
+    ok_commit = _git_run(["git", "commit", "-m", f"Auto backup {ts} UTC"])
+    # push via token URL explicitly (avoid readonly origin)
+    remote_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{GITHUB_REPO}.git"
+    ok_push = _git_run(["git", "push", remote_url, f"HEAD:{GITHUB_BRANCH}"])
+    if ok_add and ok_commit and ok_push:
+        log.info("Backup pushed: %s", os.path.basename(dst))
+        return True
+    return False
+
+def _backup_loop():
+    interval = BACKUP_INTERVAL
+    while True:
+        try:
+            ok = _backup_once()
+            if not ok:
+                log.warning("Backup failed; using fallback sleep %ss", FALLBACK_SECS)
+                time.sleep(FALLBACK_SECS)
+            else:
+                time.sleep(interval)
+        except Exception as e:
+            log.exception("Backup loop error: %s", e)
+            time.sleep(FALLBACK_SECS)
+
+def start_backup():
+    t = threading.Thread(target=_backup_loop, daemon=True)
     t.start()
 
 # ====== MAIN ======
@@ -293,9 +385,12 @@ def main():
     app.add_handler(CommandHandler("fixstock",  cmd_fixstock))
     app.add_handler(CommandHandler("addcoin",   cmd_addcoin))
     app.add_handler(CommandHandler("announce",  cmd_announce))
+    app.add_handler(CommandHandler("users",     cmd_users))
+    app.add_handler(CommandHandler("whoami",    cmd_whoami))
 
-    # keepalive (no event-loop conflict)
+    # background workers
     start_keepalive()
+    start_backup()
 
     if WEBHOOK_BASE:
         url = f"{WEBHOOK_BASE}/{BOT_TOKEN}"
