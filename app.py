@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 # SinisterXP Mail Bot — Stable Full Version (Reset Fix + Backup Delay Patch)
-# Features: core catalog + admin cmds + keep-alive + async-safe announce
-# + /users pagination + Auto GitHub Backup (hourly) + Auto Restore on restart
-# + old backup prune + safe git bootstrap + Render health-check reset fix
+# Features: full catalog + admin cmds + keep-alive + async-safe announce
+# + /users pagination + Auto GitHub Backup + Auto Restore on restart
+# + old backup cleanup + safe git bootstrap + Render health-check reset fix
 
 import os, sqlite3, logging, threading, time, requests, subprocess, shutil, asyncio
 from datetime import datetime
@@ -144,7 +144,6 @@ def _backup_loop():
             time.sleep(FALLBACK_SECS)
 
 def start_backup():
-    # delay first backup start to avoid Render health-check reset
     def delayed_start():
         try:
             time.sleep(30)
@@ -349,4 +348,11 @@ def main():
     if WEBHOOK_BASE:
         url=f"{WEBHOOK_BASE.rstrip('/')}/{BOT_TOKEN}"
         log.info("Starting webhook at %s", url)
-        app.run_webhook(listen="
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=int(PORT),
+            url_path=BOT_TOKEN,
+            webhook_url=url,
+        )
+    else:
+        log.info("Starting polling…
