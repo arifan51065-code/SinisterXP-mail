@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — v2.4 (Raw Output Safe Mode + Manual Backup + Full Stable)
+# SinisterXP Mail Bot — v2.5 (Copy Button Edition + Raw Output Safe Mode)
 
 import os, sqlite3, logging, threading, time, requests, shutil, asyncio
 from datetime import datetime
@@ -81,7 +81,7 @@ async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Backup failed: {e}")
 
-# ====== CORE ======
+# ====== BOT CORE ======
 async def ensure_user(u):
     con=db(); c=con.cursor()
     c.execute("SELECT 1 FROM users WHERE id=?", (u.id,))
@@ -173,10 +173,13 @@ async def cb_confirm(update, ctx):
     c.execute("INSERT INTO purchases(user_id,mail_name,price,ts) VALUES(?,?,?,?)",(u.id,name,price,datetime.utcnow().isoformat()))
     con.commit(); con.close()
 
+    copy_btn = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Copy", switch_inline_query=payload)]
+    ])
     await q.message.reply_text(
         f"✅ Purchase successful!\n\n{payload}\n\nRemaining: {balance - price:g} {COIN_NAME}",
         disable_web_page_preview=True,
-        reply_markup=main_keyboard()
+        reply_markup=copy_btn
     )
 
 async def cb_cancel(update, ctx): q=update.callback_query; await q.answer(); await q.message.reply_text("Cancelled.", reply_markup=main_keyboard())
