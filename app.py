@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# SinisterXP Mail Bot — v2.3 (MarkdownV2 Full Escape + Manual Backup + Stable Version)
+# SinisterXP Mail Bot — v2.4 (Raw Output Safe Mode + Manual Backup + Full Stable)
 
 import os, sqlite3, logging, threading, time, requests, shutil, asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-from telegram.helpers import escape_markdown
 
 # ====== ENV ======
 BOT_TOKEN      = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -78,11 +77,11 @@ async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Unauthorized.")
     try:
         dst = make_backup()
-        await update.message.reply_text(f"✅ Backup created: `{dst}`", parse_mode="MarkdownV2")
+        await update.message.reply_text(f"✅ Backup created: {dst}")
     except Exception as e:
         await update.message.reply_text(f"❌ Backup failed: {e}")
 
-# ====== BOT CORE ======
+# ====== CORE ======
 async def ensure_user(u):
     con=db(); c=con.cursor()
     c.execute("SELECT 1 FROM users WHERE id=?", (u.id,))
@@ -174,13 +173,8 @@ async def cb_confirm(update, ctx):
     c.execute("INSERT INTO purchases(user_id,mail_name,price,ts) VALUES(?,?,?,?)",(u.id,name,price,datetime.utcnow().isoformat()))
     con.commit(); con.close()
 
-    # ✅ Full MarkdownV2 Safe Escape
-    escaped_payload = escape_markdown(payload, version=2)
-    escaped_payload = escaped_payload.replace('!', '\\!')
-
     await q.message.reply_text(
-        f"✅ Purchase successful\\!\n\n{escaped_payload}\n\nRemaining: {balance-price:g} {COIN_NAME}",
-        parse_mode="MarkdownV2",
+        f"✅ Purchase successful!\n\n{payload}\n\nRemaining: {balance - price:g} {COIN_NAME}",
         disable_web_page_preview=True,
         reply_markup=main_keyboard()
     )
